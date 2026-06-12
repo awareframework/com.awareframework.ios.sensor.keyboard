@@ -22,9 +22,13 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
     private enum Mode { case letter, number, symbol }
     private var mode: Mode = .letter
     private var isShifted = false
+    private var isCapsLocked = false
+    private var lastShiftTapTime: TimeInterval = 0
+    private let capsLockDoubleTapInterval: TimeInterval = 0.4
 
     private var keyboardContainer: UIView?
     private var letterButtons: [UIButton] = []
+    private weak var shiftButton: UIButton?
     private var deleteInitialTimer: Timer?
     private var deleteRepeatTimer: Timer?
     private var isDeleteLongPressActive = false
@@ -33,6 +37,12 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
     private let suggestionBar = SuggestionBarView()
     private let textChecker = UITextChecker()
     private weak var globeButton: UIButton?
+
+    // Performance: cached UserDefaults and background queues
+    private var cachedDefaults: UserDefaults?
+    private let recordingQueue = DispatchQueue(label: "com.awareframework.keyboard.recording", qos: .utility)
+    private let suggestionQueue = DispatchQueue(label: "com.awareframework.keyboard.suggestion", qos: .userInitiated)
+    private let backgroundTextChecker = UITextChecker()
 
     // MARK: - Layout constants
 
@@ -85,6 +95,10 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
     open override func viewDidLoad() {
         super.viewDidLoad()
 
+        if !appGroupIdentifier.isEmpty {
+            cachedDefaults = UserDefaults(suiteName: appGroupIdentifier)
+        }
+
         // Height — set once with priority 999 to avoid conflict with system encapsulated layout
         let h = view.heightAnchor.constraint(equalToConstant: keyboardHeight + suggestionBarHeight)
         h.priority = UILayoutPriority(999)
@@ -130,6 +144,7 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
         stopRepeatingDelete()
         keyboardContainer?.removeFromSuperview()
         letterButtons.removeAll()
+        shiftButton = nil
 
         view.backgroundColor = boardBackground
 
@@ -183,6 +198,9 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             let btn = makeKeyButton(key)
             if mode == .letter && key.count == 1 && key != "⇧" && key != "⌫" {
                 letterButtons.append(btn)
+            }
+            if mode == .letter && key == "⇧" {
+                shiftButton = btn
             }
             stack.addArrangedSubview(btn)
         }
@@ -329,17 +347,33 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             deleteBackwardAndRecord()
 
         case "⇧":
-            isShifted.toggle()
+            let now = Date().timeIntervalSince1970
+            if isCapsLocked {
+                isCapsLocked = false
+                isShifted = false
+                lastShiftTapTime = 0
+            } else if isShifted && (now - lastShiftTapTime < capsLockDoubleTapInterval) {
+                isCapsLocked = true
+                lastShiftTapTime = 0
+            } else {
+                isShifted.toggle()
+                lastShiftTapTime = isShifted ? now : 0
+            }
             updateLetterButtonTitles()
+            updateShiftButton()
 
         case "MODE_NUM":
             mode = .number
             isShifted = false
+            isCapsLocked = false
+            lastShiftTapTime = 0
             buildKeyboard()
 
         case "MODE_LETTER":
             mode = .letter
             isShifted = false
+            isCapsLocked = false
+            lastShiftTapTime = 0
             buildKeyboard()
 
         case "#+=":
@@ -372,9 +406,11 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             recordEvent(before: before, current: after, isPassword: isPassword, key: char)
             updateSuggestions()
 
-            if mode == .letter && isShifted {
+            if mode == .letter && isShifted && !isCapsLocked {
                 isShifted = false
+                lastShiftTapTime = 0
                 updateLetterButtonTitles()
+                updateShiftButton()
             }
         }
     }
@@ -442,9 +478,18 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
         let transform = pressed
             ? CGAffineTransform(scaleX: keyPressedScale, y: keyPressedScale)
             : .identity
-        let backgroundColor = pressed
-            ? button.backgroundColor?.withAlphaComponent(0.78)
-            : (isActionKey(button.accessibilityIdentifier ?? "") ? actionKeyBackground : keyBackground)
+
+        // Shift button background on release is managed by updateShiftButton() in keyTapped,
+        // so we skip the background animation here to avoid a conflicting transition.
+        let isShiftButton = button === shiftButton
+        let targetBackground: UIColor?
+        if pressed {
+            targetBackground = button.backgroundColor?.withAlphaComponent(0.78)
+        } else if isShiftButton {
+            targetBackground = nil
+        } else {
+            targetBackground = isActionKey(button.accessibilityIdentifier ?? "") ? actionKeyBackground : keyBackground
+        }
 
         UIView.animate(
             withDuration: duration,
@@ -452,7 +497,9 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             options: [.beginFromCurrentState, .allowUserInteraction]
         ) {
             button.transform = transform
-            button.backgroundColor = backgroundColor
+            if let bg = targetBackground {
+                button.backgroundColor = bg
+            }
             button.layer.shadowOpacity = pressed ? 0.12 : 0.3
         }
     }
@@ -471,17 +518,25 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             return
         }
 
-        let range = NSRange(location: 0, length: partial.utf16.count)
-        let completions = textChecker.completions(
-            forPartialWordRange: range,
-            in: partial,
-            language: "en_US"
-        ) ?? []
+        // Run the NLP completion lookup on a dedicated serial queue so it doesn't block
+        // key-tap responsiveness on the main thread.
+        suggestionQueue.async { [weak self] in
+            guard let self else { return }
+            let range = NSRange(location: 0, length: partial.utf16.count)
+            let completions = self.backgroundTextChecker.completions(
+                forPartialWordRange: range,
+                in: partial,
+                language: "en_US"
+            ) ?? []
 
-        let filtered = completions
-            .filter { $0.lowercased() != partial.lowercased() }
-            .prefix(3)
-        suggestionBar.setSuggestions(Array(filtered))
+            let filtered = Array(completions
+                .filter { $0.lowercased() != partial.lowercased() }
+                .prefix(3))
+
+            DispatchQueue.main.async { [weak self] in
+                self?.suggestionBar.setSuggestions(filtered)
+            }
+        }
     }
 
     private func applySuggestion(_ word: String) {
@@ -513,6 +568,21 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
         }
     }
 
+    /// Updates the shift key appearance to reflect normal / shifted / caps-locked state.
+    private func updateShiftButton() {
+        guard let btn = shiftButton else { return }
+        if isCapsLocked {
+            btn.backgroundColor = UIColor(white: 0.2, alpha: 1)
+            btn.setTitleColor(.white, for: .normal)
+        } else if isShifted {
+            btn.backgroundColor = keyBackground
+            btn.setTitleColor(.black, for: .normal)
+        } else {
+            btn.backgroundColor = actionKeyBackground
+            btn.setTitleColor(.black, for: .normal)
+        }
+    }
+
     // MARK: - Event recording
 
     private func recordEvent(
@@ -522,23 +592,27 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
         key: String = "",
         eventType: String = "key"
     ) {
-        guard !appGroupIdentifier.isEmpty,
-              let defaults = UserDefaults(suiteName: appGroupIdentifier) else { return }
+        guard let defaults = cachedDefaults else { return }
 
+        // Build the event on the main thread using current state, then persist on background queue.
+        let rawDataMode = KeyboardRawDataMode.fromSharedDefaults(defaults)
         let event: [String: Any] = [
             "timestamp":   Int64(Date().timeIntervalSince1970 * 1000),
             "packageName": "",
-            "beforeText":  before,
-            "currentText": current,
+            "beforeText":  rawDataMode.maskedText(before),
+            "currentText": rawDataMode.maskedText(current),
             "isPassword":  isPassword ? 1 : 0,
-            "key":         key,
+            "key":         rawDataMode.maskedKey(key, eventType: eventType),
             "eventType":   eventType,
         ]
 
-        var pending = defaults.array(forKey: KeyboardSharedKeys.pendingEvents) as? [[String: Any]] ?? []
-        pending.append(event)
-        defaults.set(pending, forKey: KeyboardSharedKeys.pendingEvents)
-        defaults.synchronize()
+        recordingQueue.async {
+            var pending = defaults.array(forKey: KeyboardSharedKeys.pendingEvents) as? [[String: Any]] ?? []
+            pending.append(event)
+            defaults.set(pending, forKey: KeyboardSharedKeys.pendingEvents)
+            // synchronize() is not called per-event; the system flushes UserDefaults
+            // automatically, and KeyboardSensor polls on a 30-second timer.
+        }
     }
 }
 

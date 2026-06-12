@@ -2,17 +2,72 @@ import Foundation
 import GRDB
 import com_awareframework_ios_core
 
+private func escapeSqlJsonString(_ s: String) -> String {
+    s.replacingOccurrences(of: "\n", with: "\\n")
+     .replacingOccurrences(of: "\r", with: "\\r")
+}
+
 /// Shared key for pending events in App Group UserDefaults.
 /// Used by KeyboardInputViewController (extension side) and KeyboardSensor (app side).
 public enum KeyboardSharedKeys {
     public static let pendingEvents      = "com.awareframework.keyboard.pending_events"
     public static let lastFullAccessDate = "com.awareframework.keyboard.last_full_access_date"
+    public static let rawDataMode        = "com.awareframework.keyboard.raw_data_mode"
+}
+
+public enum KeyboardRawDataMode: String, CaseIterable, Codable {
+    case raw
+    case category
+    case none
+
+    public static func fromSharedDefaults(_ defaults: UserDefaults) -> KeyboardRawDataMode {
+        if let rawValue = defaults.string(forKey: KeyboardSharedKeys.rawDataMode),
+           let mode = KeyboardRawDataMode(rawValue: rawValue) {
+            return mode
+        }
+        return .raw
+    }
+
+    public func maskedText(_ value: String) -> String {
+        self == .raw ? value : "*"
+    }
+
+    public func maskedKey(_ key: String, eventType: String) -> String {
+        switch self {
+        case .raw:
+            return key
+        case .none:
+            return "*"
+        case .category:
+            return Self.keyCategory(key, eventType: eventType)
+        }
+    }
+
+    private static func keyCategory(_ key: String, eventType: String) -> String {
+        if eventType == "suggestion" {
+            return "p"
+        }
+
+        switch key {
+        case " ", "SPACE", "space":
+            return "s"
+        case "⌫", "DELETE", "BACKSPACE", "delete", "backspace":
+            return "d"
+        case "\n", "\r", "RETURN", "ENTER", "return", "enter":
+            return "r"
+        default:
+            if key.unicodeScalars.contains(where: { $0.properties.isEmojiPresentation || $0.properties.isEmoji }) {
+                return "e"
+            }
+            return key.count == 1 ? "t" : "o"
+        }
+    }
 }
 
 /// One keyboard event. Core fields mirror the AWARE Android keyboard sensor schema:
 /// package_name, before_text, current_text, is_password.
 public struct KeyboardData: BaseDbModelSQLite {
-    public static let databaseTableName = "keyboardData"
+    public static let databaseTableName = "ios_keyboard"
     public static let TABLE_NAME = databaseTableName
 
     public var id: Int64?
@@ -70,8 +125,8 @@ public struct KeyboardData: BaseDbModelSQLite {
             "deviceId":    deviceId,
             "label":       label,
             "packageName": packageName,
-            "beforeText":  beforeText,
-            "currentText": currentText,
+            "beforeText":  escapeSqlJsonString(beforeText),
+            "currentText": escapeSqlJsonString(currentText),
             "isPassword":  isPassword,
             "key":         key,
             "eventType":   eventType,

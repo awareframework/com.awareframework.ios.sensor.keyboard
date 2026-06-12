@@ -53,6 +53,7 @@ public class KeyboardSensor: AwareSensor {
         /// App Group identifier shared between the keyboard extension and this sensor.
         /// Example: "group.com.yourorganization.aware"
         public var appGroupIdentifier: String = ""
+        public var rawDataMode: KeyboardRawDataMode = .raw
 
         public override init() {
             super.init()
@@ -109,6 +110,7 @@ public class KeyboardSensor: AwareSensor {
             }
             return
         }
+        updateSharedRawDataPreference()
 
         // Flush any events that accumulated while the app was in the background.
         flushPendingEvents()
@@ -164,6 +166,7 @@ public class KeyboardSensor: AwareSensor {
     /// double-saving if the extension writes concurrently.
     func flushPendingEvents() {
         guard let defaults = UserDefaults(suiteName: CONFIG.appGroupIdentifier) else { return }
+        updateSharedRawDataPreference()
 
         guard let raw = defaults.array(forKey: KeyboardSharedKeys.pendingEvents) as? [[String: Any]],
               !raw.isEmpty else { return }
@@ -175,6 +178,9 @@ public class KeyboardSensor: AwareSensor {
         let events: [KeyboardData] = raw.map { dict in
             var data = KeyboardData(dict)
             data.label = CONFIG.label
+            data.beforeText = CONFIG.rawDataMode.maskedText(data.beforeText)
+            data.currentText = CONFIG.rawDataMode.maskedText(data.currentText)
+            data.key = CONFIG.rawDataMode.maskedKey(data.key, eventType: data.eventType)
             return data
         }
 
@@ -202,6 +208,13 @@ public class KeyboardSensor: AwareSensor {
     private func saveModels(_ models: [KeyboardData]) {
         guard let engine = dbEngine as? SQLiteEngine else { return }
         engine.save(models)
+    }
+
+    private func updateSharedRawDataPreference() {
+        guard !CONFIG.appGroupIdentifier.isEmpty,
+              let defaults = UserDefaults(suiteName: CONFIG.appGroupIdentifier) else { return }
+        defaults.set(CONFIG.rawDataMode.rawValue, forKey: KeyboardSharedKeys.rawDataMode)
+        defaults.synchronize()
     }
 
     private func makeSyncEngine() -> Engine {

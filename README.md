@@ -61,6 +61,7 @@ import com_awareframework_ios_sensor_keyboard
 
 let sensor = KeyboardSensor(KeyboardSensor.Config().apply { config in
     config.appGroupIdentifier = "group.com.yourorganization.aware"
+    config.rawDataMode = .category
     config.sensorObserver = self  // optional
     config.debug = true
 })
@@ -83,6 +84,7 @@ sensor.start()
 | Field | Type | Description | Default |
 |-------|------|-------------|---------|
 | `appGroupIdentifier` | `String` | App Group ID shared with the keyboard extension. **Required.** | `""` |
+| `rawDataMode` | `KeyboardRawDataMode` | Controls how text and key values are stored. | `.raw` |
 | `sensorObserver` | `KeyboardObserver?` | Callback for live keystroke events. | `nil` |
 | `debug` | `Bool` | Enables verbose logging. | `false` |
 | `label` | `String` | Label attached to recorded data. | `""` |
@@ -91,6 +93,28 @@ sensor.start()
 | `dbType` | `Engine` | Database engine type. | `.NONE` |
 | `dbPath` | `String` | SQLite database file path. | `"aware_keyboard"` |
 | `dbHost` | `String?` | Remote host for data sync. | `nil` |
+
+### Raw Data Modes
+
+`KeyboardSensor.Config.rawDataMode` controls whether raw text is stored in SQLite and in uploaded payloads.
+
+| Mode | `beforeText` / `currentText` | `key` | Use case |
+|------|-------------------------------|-------|----------|
+| `.raw` | Raw text | Raw key value | Full debugging or studies that explicitly require text content. |
+| `.category` | `"*"` | Category code | Behavioral analysis without storing typed content. |
+| `.none` | `"*"` | `"*"` | Store only timing, password flag, and event type. |
+
+Category mode stores `key` as one of the following codes:
+
+| Code | Meaning |
+|------|---------|
+| `t` | Text character |
+| `s` | Space |
+| `d` | Delete / backspace |
+| `r` | Return / enter |
+| `e` | Emoji |
+| `p` | Prediction / suggestion selection |
+| `o` | Other special key |
 
 ### KeyboardObserver
 
@@ -143,6 +167,8 @@ Open base class for the custom keyboard extension target. Provides a full QWERTY
 | `beforeText` | `String` | Text in the input field immediately before this keystroke (blank for password fields). |
 | `currentText` | `String` | Text in the input field immediately after this keystroke (blank for password fields). |
 | `isPassword` | `Int` | `1` if the field is a secure/password field, `0` otherwise. |
+| `key` | `String` | Key value or masked/category value depending on `rawDataMode`. |
+| `eventType` | `String` | Event kind, such as `"key"`, `"long_press_start"`, `"long_press_repeat"`, `"long_press_end"`, or `"suggestion"`. |
 | `timezone` | `Int` | Device timezone offset. |
 | `os` | `String` | Operating system (`"iOS"`). |
 | `jsonVersion` | `Int` | Schema version. |
@@ -162,6 +188,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, KeyboardObserver {
 
         sensor = KeyboardSensor(KeyboardSensor.Config().apply { config in
             config.appGroupIdentifier = "group.com.yourorganization.aware"
+            config.rawDataMode = .category
             config.sensorObserver = self
             config.debug = true
         })
@@ -172,7 +199,7 @@ class AppDelegate: UIResponder, UIApplicationDelegate, KeyboardObserver {
     // MARK: - KeyboardObserver
 
     func onKeyboardEvent(data: KeyboardData) {
-        print("[Keyboard] before=\(data.beforeText) current=\(data.currentText) password=\(data.isPassword)")
+        print("[Keyboard] before=\(data.beforeText) current=\(data.currentText) key=\(data.key) password=\(data.isPassword)")
     }
 }
 ```

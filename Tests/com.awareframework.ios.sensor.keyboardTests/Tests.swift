@@ -44,4 +44,20 @@ final class KeyboardDataTests: XCTestCase {
         XCTAssertTrue(data.currentText.isEmpty)
         XCTAssertEqual(data.isPassword, 1)
     }
+
+    func testRawDataModeMasksKeyboardFields() {
+        XCTAssertEqual(KeyboardRawDataMode.raw.maskedText("hello"), "hello")
+        XCTAssertEqual(KeyboardRawDataMode.raw.maskedKey("a", eventType: "key"), "a")
+
+        XCTAssertEqual(KeyboardRawDataMode.category.maskedText("hello"), "*")
+        XCTAssertEqual(KeyboardRawDataMode.category.maskedKey("a", eventType: "key"), "t")
+        XCTAssertEqual(KeyboardRawDataMode.category.maskedKey(" ", eventType: "key"), "s")
+        XCTAssertEqual(KeyboardRawDataMode.category.maskedKey("⌫", eventType: "key"), "d")
+        XCTAssertEqual(KeyboardRawDataMode.category.maskedKey("\n", eventType: "key"), "r")
+        XCTAssertEqual(KeyboardRawDataMode.category.maskedKey("word", eventType: "suggestion"), "p")
+        XCTAssertEqual(KeyboardRawDataMode.category.maskedKey("SHIFT", eventType: "key"), "o")
+
+        XCTAssertEqual(KeyboardRawDataMode.none.maskedText("hello"), "*")
+        XCTAssertEqual(KeyboardRawDataMode.none.maskedKey("a", eventType: "key"), "*")
+    }
 }
