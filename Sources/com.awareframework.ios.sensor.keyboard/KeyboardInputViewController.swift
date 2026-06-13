@@ -1,3 +1,4 @@
+import AudioToolbox
 import UIKit
 
 /// Base class for a custom keyboard extension that records keystrokes to the App Group
@@ -19,19 +20,23 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
     /// App Group identifier. Set this before calling super.viewDidLoad().
     public var appGroupIdentifier: String = ""
 
-    private enum Mode { case letter, number, symbol }
+    private enum Mode { case letter, number, symbol, emoji }
     private var mode: Mode = .letter
     private var isShifted = false
     private var isCapsLocked = false
     private var lastShiftTapTime: TimeInterval = 0
-    private let capsLockDoubleTapInterval: TimeInterval = 0.4
+    private let capsLockDoubleTapInterval: TimeInterval = 0.65
 
     private var keyboardContainer: UIView?
+    private var viewHeightConstraint: NSLayoutConstraint?
+    private var suggestionBarHeightConstraint: NSLayoutConstraint?
     private var letterButtons: [UIButton] = []
     private weak var shiftButton: UIButton?
     private var deleteInitialTimer: Timer?
     private var deleteRepeatTimer: Timer?
     private var isDeleteLongPressActive = false
+    private weak var keyPopupView: UILabel?
+    private var keyPopupHideWorkItem: DispatchWorkItem?
 
     // Suggestion bar
     private let suggestionBar = SuggestionBarView()
@@ -46,25 +51,48 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
 
     // MARK: - Layout constants
 
-    private let keyboardHeight: CGFloat = 260
+    private let keyboardHeight: CGFloat = 220
     private let suggestionBarHeight: CGFloat = 40
     private let rowSpacing: CGFloat = 8
     private let keySpacing: CGFloat = 6
     private let horizontalPadding: CGFloat = 3
+    private let homeRowHorizontalInset: CGFloat = 22
     private let verticalPadding: CGFloat = 8
     private let cornerRadius: CGFloat = 5
 
-    private let letterKeyFont = UIFont.systemFont(ofSize: 17)
-    private let actionKeyFont = UIFont.systemFont(ofSize: 15)
+    private let letterKeyFont = UIFont.systemFont(ofSize: 20, weight: .semibold)
+    private let actionKeyFont = UIFont.systemFont(ofSize: 17, weight: .semibold)
     private let deleteInitialRepeatDelay: TimeInterval = 0.45
     private let deleteRepeatInterval: TimeInterval = 0.08
     private let keyPressAnimationDuration: TimeInterval = 0.06
     private let keyReleaseAnimationDuration: TimeInterval = 0.12
-    private let keyPressedScale: CGFloat = 0.94
+    private let keyPressedScale: CGFloat = 1.08
+    private let keyPopupVisibleDuration: TimeInterval = 0.10
 
-    private let keyBackground = UIColor.white
-    private let actionKeyBackground = UIColor(white: 0.68, alpha: 1)
-    private let boardBackground = UIColor(red: 0.82, green: 0.84, blue: 0.87, alpha: 1)
+    private var keyTextColor: UIColor {
+        UIColor { trait in trait.userInterfaceStyle == .dark ? .white : .black }
+    }
+    private var keyBackground: UIColor {
+        UIColor { trait in
+            trait.userInterfaceStyle == .dark
+                ? UIColor(red: 0.22, green: 0.22, blue: 0.22, alpha: 1)
+                : .white
+        }
+    }
+    private var actionKeyBackground: UIColor {
+        UIColor { trait in
+            trait.userInterfaceStyle == .dark
+                ? UIColor(red: 0.30, green: 0.30, blue: 0.30, alpha: 1)
+                : UIColor(white: 0.68, alpha: 1)
+        }
+    }
+    private var boardBackground: UIColor {
+        UIColor { trait in
+            trait.userInterfaceStyle == .dark
+                ? UIColor(red: 0.10, green: 0.10, blue: 0.11, alpha: 1)
+                : UIColor(red: 0.82, green: 0.84, blue: 0.87, alpha: 1)
+        }
+    }
 
     // MARK: - Key definitions
 
@@ -86,6 +114,12 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
         ["123",".",",","?","!","'","⌫"],
     ]
 
+    private let emojiRows: [[String]] = [
+        ["😀","😃","😄","😁","😆","😂","🤣","😊"],
+        ["😍","😘","😎","🥳","😢","😭","😡","😴"],
+        ["👍","🙏","👏","🙌","💪","🔥","✨","❤️","⌫"],
+    ]
+
     // MARK: - UIInputViewController
 
     open var enableInputClicksWhenVisible: Bool {
@@ -99,21 +133,31 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             cachedDefaults = UserDefaults(suiteName: appGroupIdentifier)
         }
 
-        // Height — set once with priority 999 to avoid conflict with system encapsulated layout
-        let h = view.heightAnchor.constraint(equalToConstant: keyboardHeight + suggestionBarHeight)
+        // Height — starts without suggestion bar; grows when suggestions appear.
+        let h = view.heightAnchor.constraint(equalToConstant: keyboardHeight)
         h.priority = UILayoutPriority(999)
         h.isActive = true
+        viewHeightConstraint = h
 
         // Suggestion bar — constraints set here, not in buildKeyboard()
         suggestionBar.translatesAutoresizingMaskIntoConstraints = false
         suggestionBar.onSelect = { [weak self] word in self?.applySuggestion(word) }
+        suggestionBar.isHidden = true
         view.addSubview(suggestionBar)
+        let sbh = suggestionBar.heightAnchor.constraint(equalToConstant: 0)
         NSLayoutConstraint.activate([
             suggestionBar.topAnchor.constraint(equalTo: view.topAnchor),
             suggestionBar.leadingAnchor.constraint(equalTo: view.leadingAnchor),
             suggestionBar.trailingAnchor.constraint(equalTo: view.trailingAnchor),
-            suggestionBar.heightAnchor.constraint(equalToConstant: suggestionBarHeight),
+            sbh,
         ])
+        suggestionBarHeightConstraint = sbh
+
+        suggestionBar.onVisibilityChange = { [weak self] visible in
+            guard let self else { return }
+            self.suggestionBarHeightConstraint?.constant = visible ? self.suggestionBarHeight : 0
+            self.viewHeightConstraint?.constant = self.keyboardHeight + (visible ? self.suggestionBarHeight : 0)
+        }
 
         // Record that full access was granted so the host app can detect it
         if hasFullAccess,
@@ -150,6 +194,7 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
 
         let container = UIView()
         container.translatesAutoresizingMaskIntoConstraints = false
+        container.clipsToBounds = false
         view.addSubview(container)
         keyboardContainer = container
 
@@ -165,6 +210,7 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
         mainStack.spacing = rowSpacing
         mainStack.distribution = .fillEqually
         mainStack.translatesAutoresizingMaskIntoConstraints = false
+        mainStack.clipsToBounds = false
         container.addSubview(mainStack)
 
         NSLayoutConstraint.activate([
@@ -179,20 +225,24 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
         case .letter:  contentRows = letterRows
         case .number:  contentRows = numberRows
         case .symbol:  contentRows = symbolRows
+        case .emoji:   contentRows = emojiRows
         }
 
         for row in contentRows {
-            mainStack.addArrangedSubview(makeEqualRow(keys: row))
+            mainStack.addArrangedSubview(makeEqualRow(keys: row, inset: horizontalInset(for: row)))
         }
         mainStack.addArrangedSubview(makeBottomRow())
     }
 
     /// Returns a row where every key has the same width.
-    private func makeEqualRow(keys: [String]) -> UIView {
+    private func makeEqualRow(keys: [String], inset: CGFloat = 0) -> UIView {
+        let container = UIView()
         let stack = UIStackView()
         stack.axis = .horizontal
         stack.spacing = keySpacing
         stack.distribution = .fillEqually
+        stack.translatesAutoresizingMaskIntoConstraints = false
+        container.addSubview(stack)
 
         for key in keys {
             let btn = makeKeyButton(key)
@@ -204,10 +254,23 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             }
             stack.addArrangedSubview(btn)
         }
-        return stack
+
+        NSLayoutConstraint.activate([
+            stack.topAnchor.constraint(equalTo: container.topAnchor),
+            stack.bottomAnchor.constraint(equalTo: container.bottomAnchor),
+            stack.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: inset),
+            stack.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -inset),
+        ])
+
+        return container
     }
 
-    /// Returns the bottom row: [mode-switch] [space] [return], with proportional widths.
+    private func horizontalInset(for row: [String]) -> CGFloat {
+        guard mode == .letter, row.first == "a", row.last == "l" else { return 0 }
+        return homeRowHorizontalInset
+    }
+
+    /// Returns the bottom row: [mode-switch] [globe] [space] [return], with proportional widths.
     private func makeBottomRow() -> UIView {
         let switchKey: String
         let switchDisplay: String
@@ -215,7 +278,7 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
         case .letter:
             switchKey = "MODE_NUM"
             switchDisplay = "123"
-        case .number, .symbol:
+        case .number, .symbol, .emoji:
             switchKey = "MODE_LETTER"
             switchDisplay = "ABC"
         }
@@ -284,7 +347,7 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
         button.setTitle(title, for: .normal)
         button.accessibilityIdentifier = key
         button.backgroundColor = isAction ? actionKeyBackground : keyBackground
-        button.setTitleColor(.black, for: .normal)
+        button.setTitleColor(keyTextColor, for: .normal)
         button.titleLabel?.font = isAction ? actionKeyFont : letterKeyFont
         button.layer.cornerRadius = cornerRadius
         button.layer.shadowColor = UIColor.black.cgColor
@@ -325,7 +388,7 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
 
     private func isActionKey(_ key: String) -> Bool {
         switch key {
-        case "⇧", "⌫", "MODE_NUM", "MODE_LETTER", "#+=", "123",
+        case "⇧", "⌫", "MODE_NUM", "MODE_LETTER", "MODE_EMOJI", "#+=", "123",
              "SPACE", "RETURN", "GLOBE":
             return true
         default:
@@ -337,7 +400,6 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
 
     @objc private func keyTapped(_ sender: UIButton) {
         let key = sender.accessibilityIdentifier ?? sender.currentTitle ?? ""
-        playKeyboardClick()
         let proxy = textDocumentProxy
         let isPassword = proxy.isSecureTextEntry ?? false
         let before = isPassword ? "" : (proxy.documentContextBeforeInput ?? "")
@@ -347,20 +409,7 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             deleteBackwardAndRecord()
 
         case "⇧":
-            let now = Date().timeIntervalSince1970
-            if isCapsLocked {
-                isCapsLocked = false
-                isShifted = false
-                lastShiftTapTime = 0
-            } else if isShifted && (now - lastShiftTapTime < capsLockDoubleTapInterval) {
-                isCapsLocked = true
-                lastShiftTapTime = 0
-            } else {
-                isShifted.toggle()
-                lastShiftTapTime = isShifted ? now : 0
-            }
-            updateLetterButtonTitles()
-            updateShiftButton()
+            handleShiftTap()
 
         case "MODE_NUM":
             mode = .number
@@ -371,6 +420,13 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
 
         case "MODE_LETTER":
             mode = .letter
+            isShifted = false
+            isCapsLocked = false
+            lastShiftTapTime = 0
+            buildKeyboard()
+
+        case "MODE_EMOJI":
+            mode = .emoji
             isShifted = false
             isCapsLocked = false
             lastShiftTapTime = 0
@@ -404,7 +460,11 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             proxy.insertText(char)
             let after = isPassword ? "" : (proxy.documentContextBeforeInput ?? "")
             recordEvent(before: before, current: after, isPassword: isPassword, key: char)
-            updateSuggestions()
+            if mode == .emoji {
+                suggestionBar.setSuggestions([])
+            } else {
+                updateSuggestions()
+            }
 
             if mode == .letter && isShifted && !isCapsLocked {
                 isShifted = false
@@ -416,11 +476,14 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
     }
 
     @objc private func keyTouchDown(_ sender: UIButton) {
+        playKeyboardClick()
         animateKey(sender, pressed: true)
+        showKeyPopup(for: sender)
     }
 
     @objc private func keyTouchEnded(_ sender: UIButton) {
         animateKey(sender, pressed: false)
+        scheduleKeyPopupHide()
     }
 
     @objc private func deleteTouchDown(_ sender: UIButton) {
@@ -456,7 +519,6 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
         let isPassword = proxy.isSecureTextEntry ?? false
         let before = isPassword ? "" : (proxy.documentContextBeforeInput ?? "")
         proxy.deleteBackward()
-        playKeyboardClick()
         let after = isPassword ? "" : (proxy.documentContextBeforeInput ?? "")
         recordEvent(before: before, current: after, isPassword: isPassword, key: "⌫", eventType: eventType)
         updateSuggestions()
@@ -471,6 +533,7 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
 
     private func playKeyboardClick() {
         UIDevice.current.playInputClick()
+        AudioServicesPlaySystemSound(1104)
     }
 
     private func animateKey(_ button: UIButton, pressed: Bool) {
@@ -478,6 +541,7 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
         let transform = pressed
             ? CGAffineTransform(scaleX: keyPressedScale, y: keyPressedScale)
             : .identity
+        button.superview?.bringSubviewToFront(button)
 
         // Shift button background on release is managed by updateShiftButton() in keyTapped,
         // so we skip the background animation here to avoid a conflicting transition.
@@ -502,6 +566,85 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             }
             button.layer.shadowOpacity = pressed ? 0.12 : 0.3
         }
+    }
+
+    private func showKeyPopup(for button: UIButton) {
+        guard shouldShowKeyPopup(for: button),
+              let title = button.currentTitle else { return }
+
+        keyPopupHideWorkItem?.cancel()
+        keyPopupHideWorkItem = nil
+        hideKeyPopup()
+
+        let popup = UILabel()
+        popup.isUserInteractionEnabled = false
+        popup.text = title
+        popup.textAlignment = .center
+        popup.textColor = keyTextColor
+        popup.font = .systemFont(ofSize: 32, weight: .semibold)
+        popup.backgroundColor = keyBackground
+        popup.layer.cornerRadius = 10
+        popup.layer.masksToBounds = true
+        popup.layer.shadowColor = UIColor.black.cgColor
+        popup.layer.shadowOffset = CGSize(width: 0, height: 2)
+        popup.layer.shadowOpacity = 0.35
+        popup.layer.shadowRadius = 3
+        popup.layer.zPosition = 1000
+        popup.alpha = 0
+        popup.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
+
+        // Convert to view coordinates so popup can extend above keyboardContainer (e.g. into the
+        // suggestion bar area) for top-row keys, and lands correctly for all three letter rows.
+        let buttonFrame = button.convert(button.bounds, to: view)
+        let popupWidth = max(buttonFrame.width + 12, 48)
+        let popupHeight = max(buttonFrame.height * 1.65, 68)
+        let x = min(max(buttonFrame.midX - popupWidth / 2, 0), view.bounds.width - popupWidth)
+        let y = max(buttonFrame.minY - popupHeight + 12, 0)
+        popup.frame = CGRect(x: x, y: y, width: popupWidth, height: popupHeight)
+
+        view.addSubview(popup)
+        view.bringSubviewToFront(popup)
+        keyPopupView = popup
+
+        UIView.animate(
+            withDuration: keyPressAnimationDuration,
+            delay: 0,
+            options: [.beginFromCurrentState, .allowUserInteraction]
+        ) {
+            popup.alpha = 1
+            popup.transform = .identity
+        }
+    }
+
+    private func scheduleKeyPopupHide() {
+        keyPopupHideWorkItem?.cancel()
+        let workItem = DispatchWorkItem { [weak self] in
+            self?.hideKeyPopup()
+        }
+        keyPopupHideWorkItem = workItem
+        DispatchQueue.main.asyncAfter(deadline: .now() + keyPopupVisibleDuration, execute: workItem)
+    }
+
+    private func hideKeyPopup() {
+        keyPopupHideWorkItem?.cancel()
+        keyPopupHideWorkItem = nil
+        guard let popup = keyPopupView else { return }
+        keyPopupView = nil
+        UIView.animate(
+            withDuration: keyReleaseAnimationDuration,
+            delay: 0,
+            options: [.beginFromCurrentState, .allowUserInteraction]
+        ) {
+            popup.alpha = 0
+            popup.transform = CGAffineTransform(scaleX: 0.92, y: 0.92)
+        } completion: { _ in
+            popup.removeFromSuperview()
+        }
+    }
+
+    private func shouldShowKeyPopup(for button: UIButton) -> Bool {
+        guard let key = button.accessibilityIdentifier else { return false }
+        return mode == .letter && key.count == 1 && key != "-" && !isActionKey(key)
     }
 
     // MARK: - Suggestions
@@ -564,8 +707,28 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
     private func updateLetterButtonTitles() {
         for button in letterButtons {
             guard let key = button.accessibilityIdentifier else { continue }
-            button.setTitle(isShifted ? key.uppercased() : key, for: .normal)
+            button.setTitle((isShifted || isCapsLocked) ? key.uppercased() : key, for: .normal)
         }
+    }
+
+    private func handleShiftTap() {
+        let now = Date().timeIntervalSince1970
+
+        if isCapsLocked {
+            isCapsLocked = false
+            isShifted = false
+            lastShiftTapTime = 0
+        } else if lastShiftTapTime > 0 && (now - lastShiftTapTime) <= capsLockDoubleTapInterval {
+            isCapsLocked = true
+            isShifted = true
+            lastShiftTapTime = 0
+        } else {
+            isShifted.toggle()
+            lastShiftTapTime = isShifted ? now : 0
+        }
+
+        updateLetterButtonTitles()
+        updateShiftButton()
     }
 
     /// Updates the shift key appearance to reflect normal / shifted / caps-locked state.
@@ -576,10 +739,10 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             btn.setTitleColor(.white, for: .normal)
         } else if isShifted {
             btn.backgroundColor = keyBackground
-            btn.setTitleColor(.black, for: .normal)
+            btn.setTitleColor(keyTextColor, for: .normal)
         } else {
             btn.backgroundColor = actionKeyBackground
-            btn.setTitleColor(.black, for: .normal)
+            btn.setTitleColor(keyTextColor, for: .normal)
         }
     }
 
@@ -622,16 +785,31 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
 final class SuggestionBarView: UIView {
 
     var onSelect: ((String) -> Void)?
+    var onVisibilityChange: ((Bool) -> Void)?
+    private var hasEverShownSuggestions = false
 
     private let stackView = UIStackView()
     private var suggestionButtons: [UIButton] = []
+    private let separatorColor = UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(white: 0.32, alpha: 1)
+            : UIColor(white: 0.6, alpha: 0.4)
+    }
+    private let suggestionBackgroundColor = UIColor { trait in
+        trait.userInterfaceStyle == .dark
+            ? UIColor(red: 0.10, green: 0.10, blue: 0.11, alpha: 1)
+            : UIColor(red: 0.82, green: 0.84, blue: 0.87, alpha: 1)
+    }
+    private let suggestionTextColor = UIColor { trait in
+        trait.userInterfaceStyle == .dark ? .white : .black
+    }
 
     override init(frame: CGRect) {
         super.init(frame: frame)
-        backgroundColor = UIColor(red: 0.82, green: 0.84, blue: 0.87, alpha: 1)
+        backgroundColor = suggestionBackgroundColor
 
         let separator = UIView()
-        separator.backgroundColor = UIColor(white: 0.6, alpha: 0.4)
+        separator.backgroundColor = separatorColor
         separator.translatesAutoresizingMaskIntoConstraints = false
         addSubview(separator)
         NSLayoutConstraint.activate([
@@ -655,8 +833,8 @@ final class SuggestionBarView: UIView {
 
         for i in 0..<3 {
             let btn = UIButton(type: .system)
-            btn.titleLabel?.font = .systemFont(ofSize: 16)
-            btn.setTitleColor(.black, for: .normal)
+            btn.titleLabel?.font = .systemFont(ofSize: 17, weight: .semibold)
+            btn.setTitleColor(suggestionTextColor, for: .normal)
             btn.backgroundColor = .clear
             btn.tag = i
             btn.addTarget(self, action: #selector(suggestionTapped(_:)), for: .touchUpInside)
@@ -665,7 +843,7 @@ final class SuggestionBarView: UIView {
             // Vertical divider between buttons
             if i > 0 {
                 let divider = UIView()
-                divider.backgroundColor = UIColor(white: 0.6, alpha: 0.4)
+                divider.backgroundColor = separatorColor
                 divider.translatesAutoresizingMaskIntoConstraints = false
                 btn.addSubview(divider)
                 NSLayoutConstraint.activate([
@@ -684,6 +862,10 @@ final class SuggestionBarView: UIView {
     required init?(coder: NSCoder) { fatalError() }
 
     func setSuggestions(_ words: [String]) {
+        if !words.isEmpty { hasEverShownSuggestions = true }
+        let visible = hasEverShownSuggestions
+        isHidden = !visible
+        onVisibilityChange?(visible)
         for (i, btn) in suggestionButtons.enumerated() {
             if i < words.count {
                 btn.setTitle(words[i], for: .normal)
