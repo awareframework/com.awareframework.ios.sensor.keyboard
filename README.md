@@ -73,26 +73,28 @@ sensor.start()
 
 ### KeyboardSensor
 
-+ `init(_ config: KeyboardSensor.Config)` — Initializes the sensor with the given configuration.
-+ `start()` — Starts periodic flushing of keystroke events from the shared container to SQLite.
-+ `stop()` — Stops the sensor and removes all observers.
-+ `sync(force: Bool)` — Uploads stored data to the configured remote host.
-+ `set(label: String)` — Attaches a label to subsequently recorded events.
++ `init(_ config: KeyboardSensor.Config)`: — Initializes the sensor with the given configuration.
++ `start()`: — Starts periodic flushing of keystroke events from the shared container to SQLite.
++ `stop()`: Stops the sensor and removes all observers.
++ `sync(force: Bool)`: Uploads stored data to the configured remote host.
++ `set(label: String)`: Attaches a label to subsequently recorded events.
 
 ### KeyboardSensor.Config
 
-| Field | Type | Description | Default |
-|-------|------|-------------|---------|
-| `appGroupIdentifier` | `String` | App Group ID shared with the keyboard extension. **Required.** | `""` |
-| `rawDataMode` | `KeyboardRawDataMode` | Controls how text and key values are stored. | `.raw` |
-| `sensorObserver` | `KeyboardObserver?` | Callback for live keystroke events. | `nil` |
-| `debug` | `Bool` | Enables verbose logging. | `false` |
-| `label` | `String` | Label attached to recorded data. | `""` |
-| `deviceId` | `String` | AWARE device UUID. | auto |
-| `dbEncryptionKey` | `String?` | Encryption key for the SQLite database. | `nil` |
-| `dbType` | `Engine` | Database engine type. | `.NONE` |
-| `dbPath` | `String` | SQLite database file path. | `"aware_keyboard"` |
-| `dbHost` | `String?` | Remote host for data sync. | `nil` |
+Class to hold the configuration of the sensor.
+
+#### Fields
+
++ `appGroupIdentifier: String`: App Group ID shared with the keyboard extension. **Required.** (default = `""`)
++ `rawDataMode: KeyboardRawDataMode`: Controls how text and key values are stored. (default = `.raw`)
++ `sensorObserver: KeyboardObserver?`: Callback for live keystroke events. (default = `nil`)
++ `debug: Bool`: Enables verbose logging. (default = `false`)
++ `label: String`: Label attached to recorded data. (default = `""`)
++ `deviceId: String`: AWARE device UUID. (default = `auto`)
++ `dbEncryptionKey: String?`: Encryption key for the SQLite database. (default = `nil`)
++ `dbType: DatabaseType`: Database engine type. (default = `.none`)
++ `dbPath: String`: SQLite database file path. (default = `"aware_keyboard"`)
++ `dbHost: String?`: Remote host for data sync. (default = `nil`)
 
 ### Raw Data Modes
 
@@ -134,7 +136,7 @@ Open base class for the custom keyboard extension target. Provides a full QWERTY
 
 ## Broadcasts
 
-### Fired Notifications
+### Fired Broadcasts
 
 | Notification | When |
 |---|---|
@@ -144,7 +146,7 @@ Open base class for the custom keyboard extension target. Provides a full QWERTY
 | `actionAwareKeyboardSync` | Sync was requested. |
 | `actionAwareKeyboardSyncCompletion` | Sync finished. `userInfo` contains `status` (Bool) and `error` (Error?) keys. |
 
-### Received Notifications
+### Received Broadcasts
 
 | Notification | Effect |
 |---|---|
@@ -153,7 +155,7 @@ Open base class for the custom keyboard extension target. Provides a full QWERTY
 | `actionAwareKeyboardSync` | Triggers a sync attempt. |
 | `actionAwareKeyboardSetLabel` | Updates the data label. Expects `KeyboardSensor.EXTRA_LABEL` in `userInfo`. |
 
-## Data Representation
+## Data Representations
 
 ### KeyboardData
 
