@@ -206,6 +206,13 @@ class AppDelegate: UIResponder, UIApplicationDelegate, KeyboardObserver {
 }
 ```
 
+## Related Links
+
+- [Creating a custom keyboard | Apple Developer Documentation](https://developer.apple.com/documentation/uikit/creating-a-custom-keyboard)
+- [UIInputViewController | Apple Developer Documentation](https://developer.apple.com/documentation/uikit/uiinputviewcontroller)
+- [UIInputViewAudioFeedback | Apple Developer Documentation](https://developer.apple.com/documentation/uikit/uiinputviewaudiofeedback)
+- [App Groups Entitlement | Apple Developer Documentation](https://developer.apple.com/documentation/bundleresources/entitlements/com.apple.security.application-groups)
+
 ## Author
 
 Yuuki Nishiyama (The University of Tokyo), nishiyama@csis.u-tokyo.ac.jp
