@@ -25,7 +25,7 @@ public enum KeyboardRawDataMode: String, CaseIterable, Codable {
            let mode = KeyboardRawDataMode(rawValue: rawValue) {
             return mode
         }
-        return .raw
+        return .none
     }
 
     public func maskedText(_ value: String) -> String {

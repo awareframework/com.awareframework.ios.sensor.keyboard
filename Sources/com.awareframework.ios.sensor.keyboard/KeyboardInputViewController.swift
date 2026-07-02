@@ -48,6 +48,10 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
     private let recordingQueue = DispatchQueue(label: "com.awareframework.keyboard.recording", qos: .utility)
     private let suggestionQueue = DispatchQueue(label: "com.awareframework.keyboard.suggestion", qos: .userInitiated)
     private let backgroundTextChecker = UITextChecker()
+    private var pendingEventsBuffer: [[String: Any]] = []
+    private var recordingFlushScheduled = false
+    private let recordingBatchSize = 25
+    private let recordingFlushInterval: TimeInterval = 2
 
     // MARK: - Layout constants
 
@@ -180,6 +184,7 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
     open override func viewWillDisappear(_ animated: Bool) {
         super.viewWillDisappear(animated)
         stopRepeatingDelete()
+        flushRecordedEvents(synchronize: true)
     }
 
     // MARK: - Keyboard construction
@@ -769,12 +774,46 @@ open class KeyboardInputViewController: UIInputViewController, UIInputViewAudioF
             "eventType":   eventType,
         ]
 
-        recordingQueue.async {
-            var pending = defaults.array(forKey: KeyboardSharedKeys.pendingEvents) as? [[String: Any]] ?? []
-            pending.append(event)
-            defaults.set(pending, forKey: KeyboardSharedKeys.pendingEvents)
-            // synchronize() is not called per-event; the system flushes UserDefaults
-            // automatically, and KeyboardSensor polls on a 30-second timer.
+        recordingQueue.async { [weak self] in
+            guard let self else { return }
+            self.pendingEventsBuffer.append(event)
+            if self.pendingEventsBuffer.count >= self.recordingBatchSize {
+                self.flushRecordedEventsOnQueue(defaults: defaults, synchronize: false)
+                return
+            }
+            self.scheduleRecordedEventsFlush(defaults: defaults)
+        }
+    }
+
+    private func flushRecordedEvents(synchronize: Bool) {
+        guard let defaults = cachedDefaults else { return }
+        recordingQueue.async { [weak self] in
+            self?.flushRecordedEventsOnQueue(defaults: defaults, synchronize: synchronize)
+        }
+    }
+
+    private func scheduleRecordedEventsFlush(defaults: UserDefaults) {
+        guard recordingFlushScheduled == false else { return }
+        recordingFlushScheduled = true
+        recordingQueue.asyncAfter(deadline: .now() + recordingFlushInterval) { [weak self] in
+            self?.flushRecordedEventsOnQueue(defaults: defaults, synchronize: false)
+        }
+    }
+
+    private func flushRecordedEventsOnQueue(defaults: UserDefaults, synchronize: Bool) {
+        guard pendingEventsBuffer.isEmpty == false else {
+            recordingFlushScheduled = false
+            return
+        }
+        let events = pendingEventsBuffer
+        pendingEventsBuffer.removeAll(keepingCapacity: true)
+        recordingFlushScheduled = false
+
+        var pending = defaults.array(forKey: KeyboardSharedKeys.pendingEvents) as? [[String: Any]] ?? []
+        pending.append(contentsOf: events)
+        defaults.set(pending, forKey: KeyboardSharedKeys.pendingEvents)
+        if synchronize {
+            defaults.synchronize()
         }
     }
 }

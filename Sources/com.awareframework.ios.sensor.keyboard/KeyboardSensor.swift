@@ -46,6 +46,10 @@ public class KeyboardSensor: AwareSensor {
 
     private var flushTimer: Timer?
     private var foregroundObserver: NSObjectProtocol?
+    private let flushQueue = DispatchQueue(
+        label: "com.awareframework.ios.sensor.keyboard.flush.queue",
+        qos: .utility
+    )
 
     public class Config: SensorConfig {
         public var sensorObserver: KeyboardObserver? = nil
@@ -53,7 +57,7 @@ public class KeyboardSensor: AwareSensor {
         /// App Group identifier shared between the keyboard extension and this sensor.
         /// Example: "group.com.yourorganization.aware"
         public var appGroupIdentifier: String = ""
-        public var rawDataMode: KeyboardRawDataMode = .raw
+        public var rawDataMode: KeyboardRawDataMode = .none
 
         public override init() {
             super.init()
@@ -110,8 +114,6 @@ public class KeyboardSensor: AwareSensor {
             }
             return
         }
-        updateSharedRawDataPreference()
-
         // Flush any events that accumulated while the app was in the background.
         flushPendingEvents()
 
@@ -165,8 +167,14 @@ public class KeyboardSensor: AwareSensor {
     /// then clears the queue. Thread-safe: the clear happens before processing to prevent
     /// double-saving if the extension writes concurrently.
     func flushPendingEvents() {
+        flushQueue.async { [weak self] in
+            self?.flushPendingEventsOnQueue()
+        }
+    }
+
+    private func flushPendingEventsOnQueue() {
         guard let defaults = UserDefaults(suiteName: CONFIG.appGroupIdentifier) else { return }
-        updateSharedRawDataPreference()
+        updateSharedRawDataPreference(defaults)
 
         guard let raw = defaults.array(forKey: KeyboardSharedKeys.pendingEvents) as? [[String: Any]],
               !raw.isEmpty else { return }
@@ -186,10 +194,10 @@ public class KeyboardSensor: AwareSensor {
 
         saveModels(events)
 
-        for event in events {
-            CONFIG.sensorObserver?.onKeyboardEvent(data: event)
-            notificationCenter.post(name: .actionAwareKeyboard, object: self)
+        if let latestEvent = events.last {
+            CONFIG.sensorObserver?.onKeyboardEvent(data: latestEvent)
         }
+        notificationCenter.post(name: .actionAwareKeyboard, object: self)
 
         if CONFIG.debug { print(KeyboardSensor.TAG, "flushed \(events.count) event(s)") }
     }
@@ -213,6 +221,10 @@ public class KeyboardSensor: AwareSensor {
     private func updateSharedRawDataPreference() {
         guard !CONFIG.appGroupIdentifier.isEmpty,
               let defaults = UserDefaults(suiteName: CONFIG.appGroupIdentifier) else { return }
+        updateSharedRawDataPreference(defaults)
+    }
+
+    private func updateSharedRawDataPreference(_ defaults: UserDefaults) {
         defaults.set(CONFIG.rawDataMode.rawValue, forKey: KeyboardSharedKeys.rawDataMode)
         defaults.synchronize()
     }
