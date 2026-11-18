@@ -11,13 +11,19 @@ This sensor module captures keystroke events from a custom iOS keyboard extensio
 
 ## Installation
 
-1. Open Package Manager in Xcode
-    * `File` → `Add Package Dependencies…`
+Add the package with Swift Package Manager:
 
-2. Enter the repository URL
-    * `https://github.com/awareframework/com.awareframework.ios.sensor.keyboard.git`
+- Package URL: `https://github.com/awareframework/com.awareframework.ios.sensor.keyboard.git`
+- Product: `com.awareframework.ios.sensor.keyboard`
+- Module: `import com_awareframework_ios_sensor_keyboard`
 
-3. Add the package to your **app target** (not the keyboard extension target).
+See the [core package README](https://github.com/awareframework/com.awareframework.ios.core#installation) for the Xcode, `Package.swift` and command-line installation steps.
+
+**Targets:** add the package to the **app target**, not to the keyboard extension target.
+
+**Info.plist:** no usage description is required.
+
+**Capabilities:** add **App Groups** to both the app and the keyboard extension, with the same group ID (see [Setup](#setup) below).
 
 ## Setup
 
